@@ -1,4 +1,4 @@
-from source.modeling import random_forest_classifier
+from source.utils import main
 
 if __name__ == "__main__":
-    random_forest_classifier()
+    main()

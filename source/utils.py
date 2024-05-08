@@ -8,7 +8,8 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler, PowerTransformer
 from imblearn.over_sampling import SMOTE
-from classification import *
+from source.classification import *
+from source.clustering import clustering
 
 def format_time(seconds):
     # Convert seconds to timedelta
@@ -18,7 +19,10 @@ def format_time(seconds):
 
 def preprocess_data(data):
     # Import the churn_data dataset
-    clean_data = data.iloc[:, 1:-2]
+    clean_data = data.drop(data.columns[[0, 21, 22]], axis=1)
+    
+    # Convert the 'Cluster_Label' column to object type
+    clean_data['Cluster_Label'] = clean_data['Cluster_Label'].astype(object)
 
     # Normalize skewed numerical columns
     numerical_columns = clean_data.select_dtypes(include=['int', 'float']).columns
@@ -111,10 +115,11 @@ def run_model(model_func, model_name, X_train, X_test, y_train, y_test):
 
 def main():
     # Load the dataset
-    churn_data = pd.read_csv('./files/raw_BankChurners.csv')
+    raw_data = pd.read_csv('./files/raw_BankChurners.csv')
+    clustered_data = clustering(raw_data)
 
     # Preprocess the data
-    X, y = preprocess_data(churn_data)
+    X, y = preprocess_data(clustered_data)
 
     # Split the data into train and test sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)

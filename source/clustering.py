@@ -2,7 +2,8 @@ import pandas as pd
 from scipy.stats import skew
 from sklearn.preprocessing import PowerTransformer, MinMaxScaler
 from sklearn.cluster import KMeans
-from utils import preprocess_data
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest, f_classif
 
 def clustering(churn_data):
     # Apply preprocessing using the preprocess_data function
@@ -32,11 +33,19 @@ def clustering(churn_data):
     categorical_columns = clean_data.select_dtypes(include=['object']).columns
     clean_data = pd.get_dummies(clean_data, columns=categorical_columns)
 
+    # Apply PCA for dimensionality reduction
+    pca = PCA(n_components=0.85)  # Retain 85% of variance
+    clean_data_pca = pca.fit_transform(clean_data)
+
+    # Apply feature selection using SelectKBest
+    selector = SelectKBest(score_func=f_classif, k=5)  # Select 5 best features
+    clean_data_selected = selector.fit_transform(clean_data_pca, churn_data['Attrition_Flag'])
+
     # Determine the optimal number of clusters using the Elbow Method
     wcss = []
     for k in range(1, 11):
         kmeans = KMeans(n_clusters=k)
-        kmeans.fit(clean_data)
+        kmeans.fit(clean_data_selected)
         wcss.append(kmeans.inertia_)
 
     # Find the optimal number of clusters (the "elbow" point)
@@ -50,30 +59,15 @@ def clustering(churn_data):
 
     # Perform KMeans clustering with the optimal number of clusters
     kmeans = KMeans(n_clusters=optimal_num_clusters, random_state=42)
-    clusters = kmeans.fit_predict(clean_data)
-       
-    # Get count of data points in each cluster
-    cluster_counts = pd.Series(clusters).value_counts().sort_index()
+    clusters = kmeans.fit_predict(clean_data_selected)
 
-    # Count occurrences of each target variable within each cluster
-    cluster_targets = pd.concat([pd.Series(clusters, name='Cluster'), churn_data['Attrition_Flag']], axis=1)
-    cluster_targets['Count'] = 1
-    cluster_targets = cluster_targets.groupby(['Cluster', 'Attrition_Flag']).count().reset_index()
-    
-    # Print cluster details
-    print("Number of clusters:", optimal_num_clusters)
-    for i in range(optimal_num_clusters):
-        print(f"Cluster {i + 1}")
-        print(f"Number of data points in Cluster {i + 1}:", cluster_counts[i])
-        print(f"Target variable distribution in Cluster {i + 1}:")
-        total_points = cluster_counts[i]
-        for _, row in cluster_targets[cluster_targets['Cluster'] == i].iterrows():
-            target_value = row['Attrition_Flag']
-            count = row['Count']
-            percentage = (count / total_points) * 100
-            print(f"   Target: {target_value}, Percentage: {percentage:.2f}%")
+    # Add 'Cluster_Label' column to original DataFrame
+    churn_data['Cluster_Label'] = clusters
 
-    return clusters
+    # Save the DataFrame with the 'Cluster_Label' column as a CSV file
+    churn_data.to_csv('./files/clustered_BankChurners.csv', index=False)
+
+    return churn_data
 
 # Example usage
 churn_data = pd.read_csv('./files/raw_BankChurners.csv')

@@ -1,16 +1,58 @@
-import pandas as pd
 from datetime import datetime, timedelta
-from joblib import dump
 import time
+import pandas as pd
+import numpy as np
+from joblib import dump
+from scipy.stats import skew
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import train_test_split
-from source.classification import *
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler, PowerTransformer
+from imblearn.over_sampling import SMOTE
+from classification import *
 
 def format_time(seconds):
     # Convert seconds to timedelta
     td = timedelta(seconds=seconds)
     # Format timedelta as HH:MM:SS
     return str(td)
+
+def preprocess_data(data):
+    # Import the churn_data dataset
+    clean_data = data.iloc[:, 1:-2]
+
+    # Normalize skewed numerical columns
+    numerical_columns = clean_data.select_dtypes(include=['int', 'float']).columns
+    skewed_cols = clean_data[numerical_columns].apply(lambda x: skew(x))
+    skewed_cols = skewed_cols[skewed_cols > 0.5].index
+
+    # Apply Yeo-Johnson power transform to skewed columns
+    power_transformer = PowerTransformer(method='yeo-johnson')
+    clean_data[skewed_cols] = power_transformer.fit_transform(clean_data[skewed_cols])
+
+    # Standard scale the numerical columns
+    scaler = MinMaxScaler()
+    clean_data[numerical_columns] = scaler.fit_transform(clean_data[numerical_columns])
+
+    # Count the number of '-1' values in each row and create a new column
+    clean_data['Missing_Values_Count'] = (clean_data == -1).sum(axis=1)
+
+    # Label encode 'Attrition_Flag'
+    label_encoder = LabelEncoder()
+    clean_data['Attrition_Flag'] = label_encoder.fit_transform(clean_data['Attrition_Flag'])
+
+    # One-hot encode the categorical columns
+    categorical_columns = clean_data.select_dtypes(include=['object']).columns
+    clean_data = pd.get_dummies(clean_data, columns=categorical_columns)
+
+    # Split the data into features and target variable
+    X = clean_data.drop(columns=['Attrition_Flag'])
+    y = clean_data['Attrition_Flag']
+
+    # Apply SMOTE to handle class imbalance
+    smote = SMOTE(random_state=42)
+    X_resampled, y_resampled = smote.fit_resample(X, y)
+
+    return X_resampled, y_resampled
 
 def run_model(model_func, model_name, X_train, X_test, y_train, y_test):
     # Record start time
@@ -75,7 +117,7 @@ def main():
     X, y = preprocess_data(churn_data)
 
     # Split the data into train and test sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
     # Prompt the user to select a model
     print("Which model would you like to run?")

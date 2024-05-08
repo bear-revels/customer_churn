@@ -1,97 +1,80 @@
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.feature_selection import RFE
-from sklearn.metrics import confusion_matrix
+from scipy.stats import skew
 from sklearn.preprocessing import PowerTransformer, MinMaxScaler
 from sklearn.cluster import KMeans
+from utils import preprocess_data
 
-# Load the data
-churn_data = pd.read_csv('./files/raw_BankChurners.csv')
-churn_data = pd.DataFrame(churn_data)
-churn_data = churn_data.iloc[:, 1:-2]
+def clustering(churn_data):
+    # Apply preprocessing using the preprocess_data function
+    clean_data = churn_data.iloc[:, 1:-2]
 
-# Separate numeric and categorical columns
-numeric_columns = churn_data.select_dtypes(include=['int64', 'float64']).columns
-categorical_columns = churn_data.select_dtypes(include=['object']).columns
+    # Normalize skewed numerical columns
+    numerical_columns = clean_data.select_dtypes(include=['int', 'float']).columns
+    skewed_cols = clean_data[numerical_columns].apply(lambda x: skew(x))
+    skewed_cols = skewed_cols[skewed_cols > 0.5].index
 
-# Transform numeric columns to have a more Gaussian-like distribution
-transformer = PowerTransformer(method='yeo-johnson', standardize=False)
-churn_data[numeric_columns] = transformer.fit_transform(churn_data[numeric_columns])
+    # Apply Yeo-Johnson power transform to skewed columns
+    power_transformer = PowerTransformer(method='yeo-johnson')
+    clean_data[skewed_cols] = power_transformer.fit_transform(clean_data[skewed_cols])
 
-# One-hot encode categorical columns and force column names to be string type
-encoded_data = pd.get_dummies(churn_data, columns=categorical_columns, drop_first=False)
-encoded_data = encoded_data.astype(int)
+    # Standard scale the numerical columns
+    scaler = MinMaxScaler()
+    clean_data[numerical_columns] = scaler.fit_transform(clean_data[numerical_columns])
 
-# Scale all columns in the DataFrame
-scaler = MinMaxScaler()
-encoded_data_scaled = scaler.fit_transform(encoded_data)
+    # Count the number of '-1' values in each row and create a new column
+    clean_data['Missing_Values_Count'] = (clean_data == -1).sum(axis=1)
 
-# Convert the transformed data back to a DataFrame
-encoded_data_scaled_df = pd.DataFrame(encoded_data_scaled, columns=encoded_data.columns).astype(int)
+    # Encode 'Attrition_Flag'
+    attrition_flag_dict = {'Existing Customer': 0, 'Attrited Customer': 1}
+    clean_data['Attrition_Flag'] = clean_data['Attrition_Flag'].map(attrition_flag_dict)
 
-# Determine the optimal number of clusters using the Elbow Method
-wcss = []
-for k in range(1, 11):
-    kmeans = KMeans(n_clusters=k, random_state=42)
-    kmeans.fit(encoded_data_scaled_df)
-    wcss.append(kmeans.inertia_)
+    # One-hot encode the categorical columns
+    categorical_columns = clean_data.select_dtypes(include=['object']).columns
+    clean_data = pd.get_dummies(clean_data, columns=categorical_columns)
 
-# Find the optimal number of clusters (the "elbow" point)
-optimal_num_clusters = None
-min_diff = float('inf')
-for i in range(1, len(wcss)):
-    diff = wcss[i-1] - wcss[i]
-    if diff < min_diff:
-        min_diff = diff
-        optimal_num_clusters = i + 1
+    # Determine the optimal number of clusters using the Elbow Method
+    wcss = []
+    for k in range(1, 11):
+        kmeans = KMeans(n_clusters=k)
+        kmeans.fit(clean_data)
+        wcss.append(kmeans.inertia_)
 
-# Perform KMeans clustering with the optimal number of clusters
-kmeans = KMeans(n_clusters=optimal_num_clusters, random_state=42)
-clusters = kmeans.fit_predict(encoded_data_scaled_df)
+    # Find the optimal number of clusters (the "elbow" point)
+    optimal_num_clusters = None
+    min_diff = float('inf')
+    for i in range(1, len(wcss)):
+        diff = wcss[i-1] - wcss[i]
+        if diff < min_diff:
+            min_diff = diff
+            optimal_num_clusters = i + 1
 
-# Separate data for each cluster
-cluster_data = {}
-for cluster_id in range(5):
-    cluster_indices = clusters == cluster_id
-    cluster_data[cluster_id] = encoded_data_scaled_df.loc[cluster_indices]
+    # Perform KMeans clustering with the optimal number of clusters
+    kmeans = KMeans(n_clusters=optimal_num_clusters, random_state=42)
+    clusters = kmeans.fit_predict(clean_data)
+       
+    # Get count of data points in each cluster
+    cluster_counts = pd.Series(clusters).value_counts().sort_index()
 
-# Perform feature selection using RFE
-X_all = encoded_data_scaled_df.drop(columns=['Attrition_Flag_Existing Customer'])
-y_all = encoded_data_scaled_df['Attrition_Flag_Existing Customer']
-X_train, X_test, y_train, y_test = train_test_split(X_all, y_all, test_size=0.2, random_state=42)
-
-rf_classifier = RandomForestClassifier(random_state=42)
-rfe = RFE(rf_classifier, n_features_to_select=10)
-rfe.fit(X_train, y_train)
-
-selected_features = X_train.columns[rfe.support_]
-
-# Create subplots for confusion matrix and violin plot
-fig, axes = plt.subplots(nrows=5, ncols=2, figsize=(16, 20))
-
-for cluster_id, data in cluster_data.items():
-    # Plot violin plot with scaled data used for clustering
-    sns.violinplot(data=encoded_data_scaled_df.loc[data.index, selected_features], orient='h', ax=axes[cluster_id, 0])
-    axes[cluster_id, 0].set_title(f'Cluster {cluster_id} - Feature Distribution')
-    axes[cluster_id, 0].set_xlabel('Feature Value')
-    axes[cluster_id, 0].set_ylabel('Feature Name')
-
-    # Split data for the current cluster
-    X_cluster = data[selected_features]
-    y_cluster = data['Attrition_Flag_Existing Customer']
-    X_train_cluster, X_test_cluster, y_train_cluster, y_test_cluster = train_test_split(X_cluster, y_cluster, test_size=0.2, random_state=42)
+    # Count occurrences of each target variable within each cluster
+    cluster_targets = pd.concat([pd.Series(clusters, name='Cluster'), churn_data['Attrition_Flag']], axis=1)
+    cluster_targets['Count'] = 1
+    cluster_targets = cluster_targets.groupby(['Cluster', 'Attrition_Flag']).count().reset_index()
     
-    # Train RF classifier and plot confusion matrix
-    rf_classifier.fit(X_train_cluster, y_train_cluster)
-    y_pred_cluster = rf_classifier.predict(X_test_cluster)
-    cm = confusion_matrix(y_test_cluster, y_pred_cluster, labels=[0, 1])  # Specify all known labels
-    sns.heatmap(cm, annot=True, fmt='d', cmap='coolwarm', ax=axes[cluster_id, 1])
-    axes[cluster_id, 1].set_title(f'Cluster {cluster_id} - Confusion Matrix')
-    axes[cluster_id, 1].set_xlabel('Predicted label')
-    axes[cluster_id, 1].set_ylabel('True label')
+    # Print cluster details
+    print("Number of clusters:", optimal_num_clusters)
+    for i in range(optimal_num_clusters):
+        print(f"Cluster {i + 1}")
+        print(f"Number of data points in Cluster {i + 1}:", cluster_counts[i])
+        print(f"Target variable distribution in Cluster {i + 1}:")
+        total_points = cluster_counts[i]
+        for _, row in cluster_targets[cluster_targets['Cluster'] == i].iterrows():
+            target_value = row['Attrition_Flag']
+            count = row['Count']
+            percentage = (count / total_points) * 100
+            print(f"   Target: {target_value}, Percentage: {percentage:.2f}%")
 
-plt.tight_layout()
-plt.show()
+    return clusters
+
+# Example usage
+churn_data = pd.read_csv('./files/raw_BankChurners.csv')
+clusters = clustering(churn_data)
